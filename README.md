@@ -66,6 +66,18 @@ encryption = mlkem768x25519plus.native.0rtt.<客户端密钥>
    encryption 贴到面板「encryption」；
 2. 面板保存后，客户端更新一次订阅，拿到新的加密配置再连接。
 
+## 验算一对密钥是否匹配
+
+如果你怀疑面板里的两串不是同一对（比如握手失败），可以在服务器本地验算，
+不用把 decryption 发给任何人：
+
+```bash
+python3 vlessenc-keygen.py --verify "<decryption>" "<encryption>"
+```
+
+两串从面板原样复制进去。脚本只输出密钥长度、类型和匹不匹配的结论，
+绝不打印密钥内容。decryption 含私钥种子，不要发到聊天记录或公开场合。
+
 ## 注意事项
 
 - 两对不要混用：ML-KEM-768 的 decryption 只能配 ML-KEM-768 的 encryption，

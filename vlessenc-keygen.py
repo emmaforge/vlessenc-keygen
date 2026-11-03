@@ -6,6 +6,11 @@
 
     输出目录缺省为 /etc/xboard-node/vlessenc（往 /etc 下写需要 root 权限）
 
+    python3 vlessenc-keygen.py --verify <decryption> <encryption>
+
+    验算面板里的一对 decryption / encryption 是不是同一对（本地验算，
+    只输出匹不匹配和格式问题，绝不打印密钥内容）。
+
 一次生成两对，来自 xray-core vlessenc 的原话：二选一使用，不要混用。
 推荐用 ML-KEM-768 那对（抗量子）；X25519 那对也能用。
 
@@ -199,6 +204,61 @@ def mlkem768_encapsulation_key(seed64: bytes) -> bytes:
     return b"".join(_byte_encode_12(p) for p in t_hat) + rho
 
 
+# ---------------------------------------------------------------- 验算
+def _b64url_decode(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _parse_side(s: str, expect_ticket: str, role: str):
+    """解析一侧字符串，返回 (密钥字节串, 问题列表)。绝不返回密钥原文以外的信息。"""
+    s = s.strip()
+    if s == "none":
+        return None, [f"{role} 为 none（加密未启用）"]
+    parts = s.split(".")
+    if len(parts) < 4:
+        return None, [f"{role} 格式不对：应为 mlkem768x25519plus.native.<票据>.<密钥>，实际只有 {len(parts)} 段"]
+    method, mode, ticket, key_b64 = parts[0], parts[1], parts[2], parts[-1]
+    problems = []
+    if method != "mlkem768x25519plus":
+        problems.append(f"{role} 方法不对：{method}（应为 mlkem768x25519plus）")
+    if mode != "native":
+        problems.append(f"{role} 模式不对：{mode}（应为 native）")
+    if ticket != expect_ticket:
+        problems.append(f"{role} 票据不对：{ticket}（{role} 侧应为 {expect_ticket}，两串可能贴反了）")
+    try:
+        key = _b64url_decode(key_b64)
+    except Exception:
+        return None, problems + [f"{role} 密钥部分不是合法的 base64url"]
+    return key, problems
+
+
+def verify_pair(dec_str: str, enc_str: str) -> int:
+    """验算一对 decryption / encryption 是否匹配。只打印长度、类型和结论。"""
+    dec_key, dec_problems = _parse_side(dec_str, "600s", "decryption")
+    enc_key, enc_problems = _parse_side(enc_str, "0rtt", "encryption")
+    for p in dec_problems + enc_problems:
+        print("格式问题：" + p)
+    if dec_key is None or enc_key is None:
+        print("结论：无法验算（至少一侧解析失败或未启用）。")
+        return 1
+    print(f"decryption 密钥长度：{len(dec_key)} 字节")
+    print(f"encryption 密钥长度：{len(enc_key)} 字节")
+    if len(dec_key) == 64 and len(enc_key) == 1184:
+        print("类型：ML-KEM-768 对")
+        ok = mlkem768_encapsulation_key(dec_key) == enc_key
+        print("结论：" + ("匹配：encryption 正是由 decryption 的种子派生出来的。"
+                          if ok else "不匹配：encryption 不是由 decryption 的种子派生出来的，两串不是同一对。"))
+        return 0 if ok else 1
+    if len(dec_key) == 32 and len(enc_key) == 32:
+        print("类型：X25519 对")
+        ok = x25519(dec_key, (9).to_bytes(32, "little")) == enc_key
+        print("结论：" + ("匹配：encryption 正是由 decryption 的私钥派生出来的。"
+                          if ok else "不匹配：两串不是同一对。"))
+        return 0 if ok else 1
+    print("结论：不匹配：两串密钥类型对不上（混了两对的密钥）。")
+    return 1
+
+
 # ---------------------------------------------------------------- 主流程
 def _b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
@@ -211,6 +271,12 @@ def _write(path: str, content: str, mode: int):
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--verify":
+        if len(sys.argv) != 4:
+            print("用法：python3 vlessenc-keygen.py --verify <decryption> <encryption>")
+            print("  两串从面板原样复制，只在本机验算是否同一对，不打印密钥内容。")
+            return 2
+        return verify_pair(sys.argv[2], sys.argv[3])
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "/etc/xboard-node/vlessenc"
     os.makedirs(out_dir, exist_ok=True)
 
